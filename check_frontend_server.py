@@ -66,76 +66,49 @@ new_texts = [x.strip() for x in new_text_input.strip().split("\n\n") if x.strip(
 # -----------------------------
 # 查重逻辑
 # -----------------------------
-from rapidfuzz import fuzz
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import re
+from rapidfuzz import fuzz
 
-def check_similarity(old_texts, new_texts, threshold):
+def check_similarity(old_texts, new_texts, threshold=0.85, tfidf_weight=0.7, fuzzy_weight=0.3):
     """
-    混合查重：TF-IDF + 句级模糊匹配
-    threshold: 0-1
+    综合查重逻辑：
+    - TF-IDF 向量相似度
+    - 句级模糊匹配 (RapidFuzz)
+    - 按权重计算综合分数
     """
     if not old_texts or not new_texts:
         return []
 
-    results = []
-
-    # -------------------
-    # 1. TF-IDF 全文匹配
-    # -------------------
+    # 1. TF-IDF
     vectorizer = TfidfVectorizer()
     tfidf_matrix = vectorizer.fit_transform(old_texts + new_texts)
     old_matrix = tfidf_matrix[:len(old_texts)]
     new_matrix = tfidf_matrix[len(old_texts):]
 
-    tfidf_scores = []
-    tfidf_most_similar = []
+    results = []
     for i, new_vec in enumerate(new_matrix):
+        # TF-IDF 相似度
         sims = cosine_similarity(new_vec, old_matrix)
-        max_sim = sims.max()
-        idx = sims.argmax()
-        tfidf_scores.append(max_sim)
-        tfidf_most_similar.append(old_texts[idx])
+        max_tfidf = sims.max()
+        idx_tfidf = sims.argmax()
 
-    # -------------------
-    # 2. 句级模糊匹配
-    # -------------------
-    old_sentences = []
-    old_map = []  # 保存句子对应的原文案
-    for old_text in old_texts:
-        sentences = [s.strip() for s in re.split(r'[。！？\n]', old_text) if s.strip()]
-        old_sentences.extend(sentences)
-        old_map.extend([old_text]*len(sentences))
+        # 句级模糊匹配相似度
+        fuzzy_scores = [fuzz.token_sort_ratio(new_texts[i], old) / 100 for old in old_texts]
+        max_fuzzy = max(fuzzy_scores)
+        idx_fuzzy = fuzzy_scores.index(max_fuzzy)
 
-    fuzzy_scores = []
-    fuzzy_most_similar = []
-    for new_text in new_texts:
-        new_sentences = [s.strip() for s in re.split(r'[。！？\n]', new_text) if s.strip()]
-        max_score = 0
-        most_similar = ""
-        for ns in new_sentences:
-            for os, orig_old_text in zip(old_sentences, old_map):
-                score = fuzz.ratio(ns, os)
-                if score > max_score:
-                    max_score = score
-                    most_similar = orig_old_text
-        fuzzy_scores.append(max_score / 100)
-        fuzzy_most_similar.append(most_similar)
+        # 综合得分
+        combined_score = tfidf_weight * max_tfidf + fuzzy_weight * max_fuzzy
+        # 取 TF-IDF 最相似老文案为参考
+        best_idx = idx_tfidf if max_tfidf >= max_fuzzy else idx_fuzzy
 
-    # -------------------
-    # 3. 综合评分：取 TF-IDF 和句级匹配的较高值
-    # -------------------
-    for i, new_text in enumerate(new_texts):
-        combined_score = max(tfidf_scores[i], fuzzy_scores[i])
-        most_similar_text = tfidf_most_similar[i] if tfidf_scores[i] >= fuzzy_scores[i] else fuzzy_most_similar[i]
         results.append({
-            "新文案": new_text,
-            "最相似老文案": most_similar_text,
-            "相似度": round(float(combined_score), 2),
+            "新文案": new_texts[i],
+            "最相似老文案": old_texts[best_idx],
+            "相似度": f"{round(combined_score*100, 1)}%",
             "可能重复": "⚠️ 是" if combined_score >= threshold else "否"
         })
-
     return results
 
 # -----------------------------
